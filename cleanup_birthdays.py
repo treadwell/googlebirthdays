@@ -1,5 +1,6 @@
 import os
 import pickle
+import time
 from datetime import datetime
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -34,6 +35,31 @@ def get_credentials():
     
     return creds
 
+def get_all_contacts(service):
+    """Gets all contacts using pagination."""
+    all_connections = []
+    page_token = None
+    
+    while True:
+        results = service.people().connections().list(
+            resourceName='people/me',
+            pageSize=1000,
+            pageToken=page_token,
+            personFields='birthdays,names,metadata'
+        ).execute()
+        
+        connections = results.get('connections', [])
+        all_connections.extend(connections)
+        
+        # Get the next page token
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
+            
+        print(f"Fetched {len(all_connections)} contacts so far...")
+    
+    return all_connections
+
 def find_january_first_birthdays(dry_run=True):
     """Finds contacts with January 1st birthdays.
     
@@ -43,15 +69,8 @@ def find_january_first_birthdays(dry_run=True):
     creds = get_credentials()
     service = build('people', 'v1', credentials=creds)
     
-    print("Fetching contacts...")
-    # Get all contacts
-    results = service.people().connections().list(
-        resourceName='people/me',
-        pageSize=1000,
-        personFields='birthdays,names,metadata'
-    ).execute()
-    
-    connections = results.get('connections', [])
+    print("Fetching all contacts (this may take a while)...")
+    connections = get_all_contacts(service)
     total_contacts = len(connections)
     print(f"Found {total_contacts} total contacts")
     
@@ -66,7 +85,7 @@ def find_january_first_birthdays(dry_run=True):
                 name = person.get('names', [{}])[0].get('displayName', 'Unknown')
                 january_first_contacts.append((person, name))
                 print(f"Found January 1st birthday for: {name}")
-        if i % 50 == 0:  # Show progress every 50 contacts
+        if i % 100 == 0:  # Show progress every 100 contacts
             print(f"Progress: {i}/{total_contacts} contacts checked ({(i/total_contacts)*100:.1f}%)")
     
     if not january_first_contacts:
@@ -79,7 +98,13 @@ def find_january_first_birthdays(dry_run=True):
         return
     
     # If not dry run, proceed with removing birthdays
-    print(f"\nProceeding to remove January 1st birthdays from {len(january_first_contacts)} contacts...")
+    total_to_update = len(january_first_contacts)
+    print(f"\nProceeding to remove January 1st birthdays from {total_to_update} contacts...")
+    print("This may take a few minutes. Please be patient...")
+    
+    successful_updates = 0
+    failed_updates = 0
+    
     for i, (person, name) in enumerate(january_first_contacts, 1):
         birthdays = person.get('birthdays', [])
         for birthday in birthdays:
@@ -93,16 +118,26 @@ def find_january_first_birthdays(dry_run=True):
                     'metadata': person.get('metadata', {})
                 }
                 try:
+                    print(f"\nUpdating contact {i}/{total_to_update} ({i/total_to_update*100:.1f}%): {name}")
                     service.people().updateContact(
                         resourceName=person['resourceName'],
                         updatePersonFields='birthdays',
                         body=update_body
                     ).execute()
-                    print(f"[{i}/{len(january_first_contacts)}] Successfully removed January 1st birthday for {name}")
+                    print(f"✓ Successfully removed January 1st birthday for {name}")
+                    successful_updates += 1
                 except Exception as e:
-                    print(f"[{i}/{len(january_first_contacts)}] Error updating {name}: {str(e)}")
+                    print(f"✗ Error updating {name}: {str(e)}")
+                    failed_updates += 1
+                
+                # Add a small delay between updates to make progress visible
+                time.sleep(0.5)
     
     print("\nOperation completed!")
+    print(f"Summary:")
+    print(f"- Total contacts processed: {total_to_update}")
+    print(f"- Successful updates: {successful_updates}")
+    print(f"- Failed updates: {failed_updates}")
 
 if __name__ == '__main__':
     print("Running in dry-run mode to list contacts with January 1st birthdays...")
